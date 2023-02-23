@@ -369,6 +369,82 @@ class Ercf:
                     self.cmd_ERCF_CHECK_GATES,
                     desc = self.cmd_ERCF_CHECK_GATES_help)
 
+# PAUL TEMP for testing new encoder vvv
+        self.gcode.register_command('TEST_ENCODER', self.cmd_TEST_ENCODER)
+
+    def cmd_TEST_ENCODER(self, gcmd):
+        self.calibrating = True
+        try:
+            repeats = gcmd.get_int('REPEATS', 10, minval=1)
+            test = gcmd.get('TEST', "freewheel")
+            speed = gcmd.get_float('SPEED', self.long_moves_speed, above=0.)
+            self._select_tool(0)
+            self._unload_tool()
+            if test == "freewheel":
+                for i in range(repeats):
+                    self.encoder_sensor.reset_counts()    # Encoder 0000
+                    encoder_moved = self._load_encoder(retry=False)
+                    self.encoder_sensor.reset_counts()    # Encoder 0000
+                    old_short_moves_speed = self.short_moves_speed
+                    self.short_moves_speed = speed
+                    self._unload_encoder(self.unload_buffer)
+                    self.short_moves_speed = old_short_moves_speed
+                    unload_dist = self.encoder_sensor.get_distance()
+                    if abs(unload_dist - encoder_moved) > 1.0:
+                        warning = ", Possible freewheeling detected"
+                    else:
+                        warning = ""
+                    self._log_always('Test #%d, Load: %.1fmm, Unload: %.1fmm %s' % (i, encoder_moved, unload_dist, warning))
+            else:
+                dist = gcmd.get_float('DIST', 500., above=0.)
+                repeats = gcmd.get_int('REPEATS', 3, minval=1, maxval=10)
+                min_speed = gcmd.get_float('MINSPEED', speed, above=0.)
+                max_speed = gcmd.get_float('MAXSPEED', speed, above=0.)
+                accel = gcmd.get_float('ACCEL', self.gear_stepper.accel, minval=0.)
+                self._load_sequence(100, no_extruder=True)
+                plus_values, min_values = [], []
+                test_speed = min_speed
+                speed_incr = (max_speed - min_speed) / repeats
+                for x in range(repeats):
+                    self._log_always("Test run #%d, speed=%.1f" % (x, test_speed))
+                    # Move forward
+                    self.encoder_sensor.reset_counts()    # Encoder 0000
+                    self._gear_stepper_move_wait(dist, True, test_speed, accel)
+                    counts = self.encoder_sensor.get_counts()
+                    plus_values.append(counts)
+                    self._log_always("+ counts =  %d" % counts)
+                    # Move backward
+                    self.encoder_sensor.reset_counts()    # Encoder 0000
+                    self._gear_stepper_move_wait(-dist, True, test_speed, accel)
+                    counts = self.encoder_sensor.get_counts()
+                    min_values.append(counts)
+                    self._log_always("- counts =  %d" % counts)
+                    if counts == 0: break
+                    test_speed += speed_incr
+    
+                self._log_always("Load direction: mean=%(mean).2f stdev=%(stdev).2f"
+                                  " min=%(min)d max=%(max)d range=%(range)d"
+                                  % self._sample_stats(plus_values))
+                self._log_always("Unload direction: mean=%(mean).2f stdev=%(stdev).2f"
+                                  " min=%(min)d max=%(max)d range=%(range)d"
+                                  % self._sample_stats(min_values))
+    
+                mean_plus = self._sample_stats(plus_values)['mean']
+                mean_minus = self._sample_stats(min_values)['mean']
+                half_mean = (float(mean_plus) + float(mean_minus)) / 4
+    
+                if half_mean == 0:
+                    self._log_always("No counts measured")
+                else:
+                    result = half_mean * self.encoder_sensor.resolution
+                    self._log_always("Measured length = %.6f" % result)
+        except ErcfError as ee:
+            self._pause(str(ee))
+        finally:
+            self._set_loaded_status(self.LOADED_STATUS_UNKNOWN)
+            self.calibrating = False
+# PAUL TEMP for testing new encoder ^^^
+
 
     def handle_connect(self):
         # Setup background file based logging before logging any messages
@@ -570,16 +646,14 @@ class Ercf:
             self._log_always(self._tool_to_gate_map_to_human_string(self.startup_status == 1))
             if self.persistence_level >= 4:
                 self._display_visual_state()
-        self._servo_up
+        #self._servo_up()
 
 ####################################
 # LOGGING AND STATISTICS FUNCTIONS #
 ####################################
 
     def get_status(self, eventtime):
-        encoder_pos = float(self.encoder_sensor.get_distance())
         return {
-                'encoder_pos': encoder_pos,
                 'is_paused': self.is_paused,
                 'tool': self.tool_selected,
                 'gate': self.gate_selected,
